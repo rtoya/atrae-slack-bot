@@ -1,0 +1,22 @@
+name = "atrae-slack-bot"
+main = "dist/index.js"
+compatibility_date = "2025-10-01"
+workers_dev = true
+
+# Custom domain
+routes = [
+  { pattern = "big-emoji.com/*", zone_name = "big-emoji.com" }
+]
+
+# KV namespace for emoji caching
+# Run: wrangler kv:namespace create "EMOJI_KV"
+# For preview: wrangler kv:namespace create "EMOJI_KV" --preview
+# Then update the id below
+kv_namespaces = [
+  { binding = "EMOJI_KV", id = "ad812e5a8ea547c68879b78444c85690", preview_id = "a1c15adf1e6b4568ab56429c6c581a2c" }
+]
+
+# Environment variables (set with wrangler secret put)
+# SLACK_BOT_TOKEN
+# SLACK_USER_TOKEN (optional - for posting as user)
+# SLACK_SIGNING_SECRET

@@ -1,0 +1,2 @@
+-- No tables needed for internal app
+-- Bot token is managed via environment variable SLACK_BOT_TOKEN

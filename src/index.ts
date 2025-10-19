@@ -168,6 +168,7 @@ app.post('/slack/interactive', async (c) => {
   // Handle modal submission
   if (payload.type === 'view_submission' && payload.view.callback_id === 'bigemoji_modal') {
     const team_id = payload.team.id as string;
+    const user_id = payload.user?.id as string;
     const metadata = JSON.parse(payload.view.private_metadata as string);
     const channel = metadata.channel_id as string;
     const thread_ts = metadata.thread_ts as string;
@@ -181,6 +182,21 @@ app.post('/slack/interactive', async (c) => {
       });
     }
 
+    // Get user info for username and icon
+    const userInfoRes = await fetch(`https://slack.com/api/users.info?user=${user_id}`, {
+      headers: {
+        'Authorization': `Bearer ${c.env.SLACK_BOT_TOKEN}`
+      }
+    });
+    const userInfo = await userInfoRes.json<any>();
+
+    if (!userInfo.ok) {
+      throw new Error(`users.info failed: ${JSON.stringify(userInfo)}`);
+    }
+
+    const username = userInfo.user.real_name || userInfo.user.name;
+    const icon_url = userInfo.user.profile.image_192;
+
     // Get emoji URL
     const list = await getEmojiList(team_id, c.env.EMOJI_KV, c.env.SLACK_BOT_TOKEN);
     const target = list.find(e => e.name === selection);
@@ -192,82 +208,27 @@ app.post('/slack/interactive', async (c) => {
       });
     }
 
-    // Download the emoji image
-    const imageRes = await fetch(target.url);
-    if (!imageRes.ok) {
-      return c.json({
-        response_action: 'errors',
-        errors: { emoji_pick: 'Failed to download emoji image. Please try again.' }
-      });
-    }
-
-    const imageBuffer = await imageRes.arrayBuffer();
-
-    // Determine file extension from URL or content type
-    const contentType = imageRes.headers.get('content-type') || 'image/png';
-    const ext = contentType.split('/')[1] || 'png';
-    const filename = `${selection}.${ext}`;
-
-    // Post as file using user token (if available) or bot token
-    const token = c.env.SLACK_USER_TOKEN || c.env.SLACK_BOT_TOKEN;
-
-    // Step 1: Get upload URL using files.getUploadURLExternal
-    const getUrlBody = new URLSearchParams({
-      filename: filename,
-      length: imageBuffer.byteLength.toString()
-    });
-
-    const getUrlApiRes = await fetch('https://slack.com/api/files.getUploadURLExternal', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: getUrlBody
-    });
-
-    const getUrlRes = await getUrlApiRes.json<any>();
-
-    if (!getUrlRes.ok) {
-      return c.json({
-        response_action: 'errors',
-        errors: { emoji_pick: `Failed to get upload URL: ${getUrlRes.error}` }
-      });
-    }
-
-    const uploadUrl = getUrlRes.upload_url;
-    const fileId = getUrlRes.file_id;
-
-    // Step 2: Upload file to the URL
-    const uploadRes = await fetch(uploadUrl, {
-      method: 'POST',
-      body: imageBuffer
-    });
-
-    if (!uploadRes.ok) {
-      return c.json({
-        response_action: 'errors',
-        errors: { emoji_pick: 'Failed to upload file. Please try again.' }
-      });
-    }
-
-    // Step 3: Complete the upload and share to channel
-    const completeParams: any = {
-      files: [
+    // Post message with user's name and icon, using the emoji URL directly
+    const messageParams: any = {
+      channel: channel,
+      text: `:${selection}:`,
+      username: username,
+      icon_url: icon_url,
+      blocks: [
         {
-          id: fileId,
-          title: `:${selection}:`
+          type: 'image',
+          image_url: target.url,
+          alt_text: `:${selection}:`
         }
-      ],
-      channel_id: channel
+      ]
     };
 
     // Add thread_ts if in thread
     if (thread_ts) {
-      completeParams.thread_ts = thread_ts;
+      messageParams.thread_ts = thread_ts;
     }
 
-    await slackApi('files.completeUploadExternal', token, completeParams);
+    await slackApi('chat.postMessage', c.env.SLACK_BOT_TOKEN, messageParams);
 
     return c.json({ response_action: 'clear' });
   }
@@ -275,6 +236,7 @@ app.post('/slack/interactive', async (c) => {
   // Handle global shortcut modal submission
   if (payload.type === 'view_submission' && payload.view.callback_id === 'bigemoji_modal_global') {
     const team_id = payload.team.id as string;
+    const user_id = payload.user.id as string;
     const channelValue = payload.view.state.values['channel_select']?.['channel'];
     const channel = channelValue?.selected_conversation as string;
     const selection = payload.view.state.values['emoji_pick']['emoji_select']
@@ -294,6 +256,21 @@ app.post('/slack/interactive', async (c) => {
       });
     }
 
+    // Get user info for username and icon
+    const userInfoRes = await fetch(`https://slack.com/api/users.info?user=${user_id}`, {
+      headers: {
+        'Authorization': `Bearer ${c.env.SLACK_BOT_TOKEN}`
+      }
+    });
+    const userInfo = await userInfoRes.json<any>();
+
+    if (!userInfo.ok) {
+      throw new Error(`users.info failed: ${JSON.stringify(userInfo)}`);
+    }
+
+    const username = userInfo.user.real_name || userInfo.user.name;
+    const icon_url = userInfo.user.profile.image_192;
+
     // Get emoji URL
     const list = await getEmojiList(team_id, c.env.EMOJI_KV, c.env.SLACK_BOT_TOKEN);
     const target = list.find(e => e.name === selection);
@@ -305,74 +282,19 @@ app.post('/slack/interactive', async (c) => {
       });
     }
 
-    // Download the emoji image
-    const imageRes = await fetch(target.url);
-    if (!imageRes.ok) {
-      return c.json({
-        response_action: 'errors',
-        errors: { emoji_pick: 'Failed to download emoji image. Please try again.' }
-      });
-    }
-
-    const imageBuffer = await imageRes.arrayBuffer();
-
-    // Determine file extension from URL or content type
-    const contentType = imageRes.headers.get('content-type') || 'image/png';
-    const ext = contentType.split('/')[1] || 'png';
-    const filename = `${selection}.${ext}`;
-
-    // Post as file using user token (if available) or bot token
-    const token = c.env.SLACK_USER_TOKEN || c.env.SLACK_BOT_TOKEN;
-
-    // Step 1: Get upload URL using files.getUploadURLExternal
-    const getUrlBody = new URLSearchParams({
-      filename: filename,
-      length: imageBuffer.byteLength.toString()
-    });
-
-    const getUrlApiRes = await fetch('https://slack.com/api/files.getUploadURLExternal', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: getUrlBody
-    });
-
-    const getUrlRes = await getUrlApiRes.json<any>();
-
-    if (!getUrlRes.ok) {
-      return c.json({
-        response_action: 'errors',
-        errors: { emoji_pick: `Failed to get upload URL: ${getUrlRes.error}` }
-      });
-    }
-
-    const uploadUrl = getUrlRes.upload_url;
-    const fileId = getUrlRes.file_id;
-
-    // Step 2: Upload file to the URL
-    const uploadRes = await fetch(uploadUrl, {
-      method: 'POST',
-      body: imageBuffer
-    });
-
-    if (!uploadRes.ok) {
-      return c.json({
-        response_action: 'errors',
-        errors: { emoji_pick: 'Failed to upload file. Please try again.' }
-      });
-    }
-
-    // Step 3: Complete the upload and share to channel
-    await slackApi('files.completeUploadExternal', token, {
-      files: [
+    // Post message with user's name and icon, using the emoji URL directly
+    await slackApi('chat.postMessage', c.env.SLACK_BOT_TOKEN, {
+      channel: channel,
+      text: `:${selection}:`,
+      username: username,
+      icon_url: icon_url,
+      blocks: [
         {
-          id: fileId,
-          title: `:${selection}:`
+          type: 'image',
+          image_url: target.url,
+          alt_text: `:${selection}:`
         }
-      ],
-      channel_id: channel
+      ]
     });
 
     return c.json({ response_action: 'clear' });

@@ -2,18 +2,76 @@ import { Hono } from 'hono';
 import { verifySlackRequest } from './slack';
 import { slackApi } from './slack-api';
 import { getEmojiList, filterEmojiOptions } from './emoji';
+import {
+  getAuthorizationUrl,
+  exchangeCodeForToken,
+  getValidToken,
+  clockIn,
+  clockOut,
+  getCompanyId,
+  type FreeeConfig,
+  type FreeeTokens
+} from './freee';
 
 type Bindings = {
   EMOJI_KV: KVNamespace;
+  FREEE_TOKENS_KV: KVNamespace;
   SLACK_BOT_TOKEN: string;
   SLACK_USER_TOKEN?: string;
   SLACK_SIGNING_SECRET: string;
+  FREEE_CLIENT_ID: string;
+  FREEE_CLIENT_SECRET: string;
+  FREEE_REDIRECT_URI: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
 
 // Health check endpoint
 app.get('/healthz', (c) => c.text('ok'));
+
+// --- Freee OAuth Flow ---
+app.get('/freee/auth', (c) => {
+  const userId = c.req.query('user_id');
+  if (!userId) {
+    return c.text('Missing user_id parameter', 400);
+  }
+
+  const config: FreeeConfig = {
+    clientId: c.env.FREEE_CLIENT_ID,
+    clientSecret: c.env.FREEE_CLIENT_SECRET,
+    redirectUri: c.env.FREEE_REDIRECT_URI
+  };
+
+  const authUrl = getAuthorizationUrl(config);
+  const stateParam = `&state=${userId}`;
+
+  return c.redirect(authUrl + stateParam);
+});
+
+app.get('/freee/callback', async (c) => {
+  const code = c.req.query('code');
+  const userId = c.req.query('state');
+
+  if (!code || !userId) {
+    return c.text('Missing code or state parameter', 400);
+  }
+
+  const config: FreeeConfig = {
+    clientId: c.env.FREEE_CLIENT_ID,
+    clientSecret: c.env.FREEE_CLIENT_SECRET,
+    redirectUri: c.env.FREEE_REDIRECT_URI
+  };
+
+  try {
+    const tokens = await exchangeCodeForToken(code, config);
+    await c.env.FREEE_TOKENS_KV.put(userId, JSON.stringify(tokens));
+
+    return c.text('Authentication successful! You can now use /clockin and /clockout commands.');
+  } catch (error) {
+    console.error('OAuth callback error:', error);
+    return c.text('Authentication failed. Please try again.', 500);
+  }
+});
 
 // --- Slash Command ---
 app.post('/slack/command', async (c) => {
@@ -22,10 +80,103 @@ app.post('/slack/command', async (c) => {
   }
 
   const form = await c.req.formData();
-  const trigger_id = String(form.get('trigger_id') ?? '');
+  const command = String(form.get('command') ?? '');
+  const user_id = String(form.get('user_id') ?? '');
   const channel_id = String(form.get('channel_id') ?? '');
-  const thread_ts = String(form.get('thread_ts') ?? ''); // Get thread_ts if in thread
+  const trigger_id = String(form.get('trigger_id') ?? '');
+  const thread_ts = String(form.get('thread_ts') ?? '');
 
+  // Handle /clockin command
+  if (command === '/clockin') {
+    const config: FreeeConfig = {
+      clientId: c.env.FREEE_CLIENT_ID,
+      clientSecret: c.env.FREEE_CLIENT_SECRET,
+      redirectUri: c.env.FREEE_REDIRECT_URI
+    };
+
+    // Check if user has tokens
+    const tokensJson = await c.env.FREEE_TOKENS_KV.get(user_id);
+    if (!tokensJson) {
+      const authUrl = `${c.env.FREEE_REDIRECT_URI.replace('/freee/callback', '/freee/auth')}?user_id=${user_id}`;
+      return c.json({
+        response_type: 'ephemeral',
+        text: `freeeの認証が必要です。以下のURLから認証を行ってください:\n${authUrl}`
+      });
+    }
+
+    try {
+      let tokens: FreeeTokens = JSON.parse(tokensJson);
+      tokens = await getValidToken(tokens, config);
+      await c.env.FREEE_TOKENS_KV.put(user_id, JSON.stringify(tokens));
+
+      const companyId = await getCompanyId(tokens.access_token);
+      await clockIn(tokens.access_token, companyId);
+
+      // Post to Slack
+      await slackApi('chat.postMessage', c.env.SLACK_BOT_TOKEN, {
+        channel: channel_id,
+        text: `<@${user_id}> が出勤しました`
+      });
+
+      return c.json({
+        response_type: 'ephemeral',
+        text: '出勤を記録しました'
+      });
+    } catch (error) {
+      console.error('Clock in error:', error);
+      return c.json({
+        response_type: 'ephemeral',
+        text: `エラーが発生しました: ${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+  }
+
+  // Handle /clockout command
+  if (command === '/clockout') {
+    const config: FreeeConfig = {
+      clientId: c.env.FREEE_CLIENT_ID,
+      clientSecret: c.env.FREEE_CLIENT_SECRET,
+      redirectUri: c.env.FREEE_REDIRECT_URI
+    };
+
+    // Check if user has tokens
+    const tokensJson = await c.env.FREEE_TOKENS_KV.get(user_id);
+    if (!tokensJson) {
+      const authUrl = `${c.env.FREEE_REDIRECT_URI.replace('/freee/callback', '/freee/auth')}?user_id=${user_id}`;
+      return c.json({
+        response_type: 'ephemeral',
+        text: `freeeの認証が必要です。以下のURLから認証を行ってください:\n${authUrl}`
+      });
+    }
+
+    try {
+      let tokens: FreeeTokens = JSON.parse(tokensJson);
+      tokens = await getValidToken(tokens, config);
+      await c.env.FREEE_TOKENS_KV.put(user_id, JSON.stringify(tokens));
+
+      const companyId = await getCompanyId(tokens.access_token);
+      await clockOut(tokens.access_token, companyId);
+
+      // Post to Slack
+      await slackApi('chat.postMessage', c.env.SLACK_BOT_TOKEN, {
+        channel: channel_id,
+        text: `<@${user_id}> が退勤しました`
+      });
+
+      return c.json({
+        response_type: 'ephemeral',
+        text: '退勤を記録しました'
+      });
+    } catch (error) {
+      console.error('Clock out error:', error);
+      return c.json({
+        response_type: 'ephemeral',
+        text: `エラーが発生しました: ${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+  }
+
+  // Existing bigemoji command (default)
   // Store channel and thread_ts in private_metadata
   const metadata = JSON.stringify({ channel_id, thread_ts });
 

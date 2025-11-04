@@ -121,7 +121,7 @@ async function publishHomeTab(userId: string, env: Bindings) {
           type: 'button',
           text: {
             type: 'plain_text',
-            text: 'リモート出勤'
+            text: ':house: リモート出勤'
           },
           style: 'primary',
           action_id: 'clock_in_remote_button'
@@ -130,7 +130,7 @@ async function publishHomeTab(userId: string, env: Bindings) {
           type: 'button',
           text: {
             type: 'plain_text',
-            text: 'オフィス出勤'
+            text: ':office: オフィス出勤'
           },
           style: 'primary',
           action_id: 'clock_in_office_button'
@@ -139,7 +139,7 @@ async function publishHomeTab(userId: string, env: Bindings) {
           type: 'button',
           text: {
             type: 'plain_text',
-            text: '退勤'
+            text: ':city_sunset: 退勤'
           },
           action_id: 'clock_out_button'
         }
@@ -152,7 +152,7 @@ async function publishHomeTab(userId: string, env: Bindings) {
           type: 'button',
           text: {
             type: 'plain_text',
-            text: '休憩入り'
+            text: ':soon: 休憩入り'
           },
           action_id: 'break_start_button'
         },
@@ -160,7 +160,7 @@ async function publishHomeTab(userId: string, env: Bindings) {
           type: 'button',
           text: {
             type: 'plain_text',
-            text: '休憩戻り'
+            text: ':back: 休憩戻り'
           },
           action_id: 'break_end_button'
         }
@@ -178,8 +178,8 @@ async function publishHomeTab(userId: string, env: Bindings) {
       text: {
         type: 'mrkdwn',
         text: isFreeeAuthenticated
-          ? '*🔗 freee連携*\nステータス: ✅ 連携済み'
-          : '*🔗 freee連携*\nステータス: ⚪️ 未連携'
+          ? '*🔗 freee連携 (実装中...)*\nステータス: ✅ 連携済み'
+          : '*🔗 freee連携 (実装中...)*\nステータス: ⚪️ 未連携'
       }
     }
   );
@@ -229,7 +229,7 @@ async function publishHomeTab(userId: string, env: Bindings) {
           type: 'button',
           text: {
             type: 'plain_text',
-            text: '🔄 更新'
+            text: '🔄 ページ更新'
           },
           action_id: 'reload_home_button'
         }
@@ -373,27 +373,7 @@ app.post('/slack/command', async (c) => {
   // Handle /clockout command
   if (command === '/clockout') {
     try {
-      // Always save to KV
-      await saveTimeClockKV(c.env.TIME_CLOCKS_KV, user_id, 'clock_out');
-
-      // If freee token exists, also call freee API
-      const tokensJson = await c.env.FREEE_TOKENS_KV.get(user_id);
-      if (tokensJson) {
-        const config: FreeeConfig = {
-          clientId: c.env.FREEE_CLIENT_ID,
-          clientSecret: c.env.FREEE_CLIENT_SECRET,
-          redirectUri: c.env.FREEE_REDIRECT_URI
-        };
-
-        let tokens: FreeeTokens = JSON.parse(tokensJson);
-        tokens = await getValidToken(tokens, config);
-        await c.env.FREEE_TOKENS_KV.put(user_id, JSON.stringify(tokens));
-
-        const companyId = await getCompanyId(tokens.access_token);
-        await clockOut(tokens.access_token, companyId);
-      }
-
-      // Open modal for message input
+      // Open modal for daily report input (data will be saved in modal submission)
       const metadata = JSON.stringify({ clock_type: 'clock_out' });
       await slackApi('views.open', c.env.SLACK_BOT_TOKEN, {
         trigger_id: trigger_id,
@@ -408,12 +388,14 @@ app.post('/slack/command', async (c) => {
             {
               type: 'input',
               block_id: 'message_input',
-              label: { type: 'plain_text', text: 'メッセージ' },
+              label: { type: 'plain_text', text: '日報' },
               element: {
                 type: 'plain_text_input',
                 action_id: 'message',
-                initial_value: '退勤しました',
-                placeholder: { type: 'plain_text', text: 'メッセージを入力してください' }
+                multiline: true,
+                min_length: 1,
+                initial_value: `*今日やったこと*\n- \n\n*明日やること*\n- \n\n*ひとこと*\n- `,
+                placeholder: { type: 'plain_text', text: '日報を入力してください' }
               }
             }
           ]
@@ -505,18 +487,21 @@ app.post('/slack/interactive', async (c) => {
       let clockType: 'clock_in' | 'clock_out' | 'break_begin' | 'break_end' | null = null;
       let modalTitle = '';
       let requireModal = true;
+      let location = '';
 
       if (actionId === 'clock_in_remote_button') {
         clockType = 'clock_in';
-        defaultMessage = 'リモート出勤しました';
+        location = 'remote';
+        defaultMessage = '';
         modalTitle = 'リモート出勤';
       } else if (actionId === 'clock_in_office_button') {
         clockType = 'clock_in';
-        defaultMessage = 'オフィス出勤しました';
+        location = 'office';
+        defaultMessage = '';
         modalTitle = 'オフィス出勤';
       } else if (actionId === 'clock_out_button') {
         clockType = 'clock_out';
-        defaultMessage = '退勤しました';
+        defaultMessage = `*今日やったこと*\n- \n\n*明日やること*\n- \n\n*ひとこと*\n- `;
         modalTitle = '退勤';
       } else if (actionId === 'break_start_button') {
         clockType = 'break_begin';
@@ -551,7 +536,23 @@ app.post('/slack/interactive', async (c) => {
       }
 
       // For clock in/out, open modal immediately (save data later in modal submission)
-      const metadata = JSON.stringify({ clock_type: clockType });
+      const metadata = JSON.stringify({ clock_type: clockType, location });
+
+      // For clock_out, use multiline input for daily report
+      const inputElement = clockType === 'clock_out' ? {
+        type: 'plain_text_input',
+        action_id: 'message',
+        multiline: true,
+        min_length: 1,
+        initial_value: defaultMessage,
+        placeholder: { type: 'plain_text', text: '日報を入力してください' }
+      } : {
+        type: 'plain_text_input',
+        action_id: 'message',
+        initial_value: defaultMessage,
+        placeholder: { type: 'plain_text', text: 'メッセージを入力してください' }
+      };
+
       await slackApi('views.open', c.env.SLACK_BOT_TOKEN, {
         trigger_id: triggerId,
         view: {
@@ -565,13 +566,8 @@ app.post('/slack/interactive', async (c) => {
             {
               type: 'input',
               block_id: 'message_input',
-              label: { type: 'plain_text', text: 'メッセージ' },
-              element: {
-                type: 'plain_text_input',
-                action_id: 'message',
-                initial_value: defaultMessage,
-                placeholder: { type: 'plain_text', text: 'メッセージを入力してください' }
-              }
+              label: { type: 'plain_text', text: clockType === 'clock_out' ? '日報' : 'メッセージ' },
+              element: inputElement
             }
           ]
         }
@@ -850,13 +846,14 @@ app.post('/slack/interactive', async (c) => {
     const userId = payload.user.id;
     const metadata = JSON.parse(payload.view.private_metadata);
     const clockType = metadata.clock_type;
-    const message = payload.view.state.values['message_input']['message'].value;
+    const location = metadata.location || '';
+    const userMessage = payload.view.state.values['message_input']['message'].value;
 
-    if (!message) {
-      return c.json({
-        response_action: 'errors',
-        errors: { message_input: 'メッセージを入力してください' }
-      });
+    // Format final message with location prefix for clock_in
+    let finalMessage = userMessage;
+    if (clockType === 'clock_in' && location) {
+      const locationText = location === 'remote' ? 'リモート出勤しました:house:' : 'オフィス出勤しました:office:';
+      finalMessage = userMessage ? `${locationText}\nメッセージ：${userMessage}` : locationText;
     }
 
     // Process everything in background to avoid timeout
@@ -917,12 +914,12 @@ app.post('/slack/interactive', async (c) => {
           // Get notification channel from environment variable
           const notificationChannel = c.env.NOTIFICATION_CHANNEL_ID || '00_at_wevox_ocean';
 
-          console.log('Posting to channel:', notificationChannel, 'message:', message);
+          console.log('Posting to channel:', notificationChannel, 'message:', finalMessage);
 
           // Post to notification channel as user
           const postResult = await slackApi('chat.postMessage', c.env.SLACK_BOT_TOKEN, {
             channel: notificationChannel,
-            text: message,
+            text: finalMessage,
             username: username,
             icon_url: icon_url
           });

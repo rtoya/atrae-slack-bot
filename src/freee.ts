@@ -21,6 +21,14 @@ export interface AttendanceRecord {
   clock_out_at: string | null;
 }
 
+export interface TimeClock {
+  id: number;
+  date: string;
+  type: 'clock_in' | 'clock_out' | 'break_begin' | 'break_end';
+  datetime: string;
+  base_date: string;
+}
+
 /**
  * Generate OAuth authorization URL
  */
@@ -185,6 +193,110 @@ export async function clockOut(
 
   const data = await response.json<any>();
   return data.time_clock;
+}
+
+/**
+ * Break start (休憩入り)
+ */
+export async function breakStart(
+  accessToken: string,
+  companyId: number
+): Promise<AttendanceRecord> {
+  const now = new Date();
+  const jstDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+  const baseDate = jstDate.toISOString().split('T')[0];
+
+  const response = await fetch(
+    `https://api.freee.co.jp/hr/api/v1/employees/me/time_clocks`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        company_id: companyId,
+        type: 'break_begin',
+        base_date: baseDate
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to start break: ${error}`);
+  }
+
+  const data = await response.json<any>();
+  return data.time_clock;
+}
+
+/**
+ * Break end (休憩戻り)
+ */
+export async function breakEnd(
+  accessToken: string,
+  companyId: number
+): Promise<AttendanceRecord> {
+  const now = new Date();
+  const jstDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+  const baseDate = jstDate.toISOString().split('T')[0];
+
+  const response = await fetch(
+    `https://api.freee.co.jp/hr/api/v1/employees/me/time_clocks`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        company_id: companyId,
+        type: 'break_end',
+        base_date: baseDate
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to end break: ${error}`);
+  }
+
+  const data = await response.json<any>();
+  return data.time_clock;
+}
+
+/**
+ * Get latest time clock record
+ */
+export async function getLatestTimeClock(
+  accessToken: string,
+  companyId: number
+): Promise<TimeClock | null> {
+  const now = new Date();
+  const jstDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+  const baseDate = jstDate.toISOString().split('T')[0];
+
+  const response = await fetch(
+    `https://api.freee.co.jp/hr/api/v1/employees/me/time_clocks?company_id=${companyId}&from_date=${baseDate}&to_date=${baseDate}&limit=1`,
+    {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to get time clocks: ${error}`);
+  }
+
+  const data = await response.json<any>();
+  if (data.time_clocks && data.time_clocks.length > 0) {
+    return data.time_clocks[0];
+  }
+  return null;
 }
 
 /**

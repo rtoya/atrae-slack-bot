@@ -14,7 +14,8 @@ routes = [
 # Then update the id below
 kv_namespaces = [
   { binding = "EMOJI_KV", id = "ad812e5a8ea547c68879b78444c85690", preview_id = "a1c15adf1e6b4568ab56429c6c581a2c" },
-  { binding = "FREEE_TOKENS_KV", id = "7cedd24dc99b4394aa740979f16e9a34", preview_id = "33b1254998dc43578e5a7782d661d2a0" }
+  { binding = "FREEE_TOKENS_KV", id = "7cedd24dc99b4394aa740979f16e9a34", preview_id = "33b1254998dc43578e5a7782d661d2a0" },
+  { binding = "TIME_CLOCKS_KV", id = "e88e1ed6d1364ef38c214a94109594e1", preview_id = "0dad4336ba3e4a7b8c47f09d24cd0c10" }
 ]
 
 # Environment variables (set with wrangler secret put)
@@ -24,3 +25,4 @@ kv_namespaces = [
 # FREEE_CLIENT_ID
 # FREEE_CLIENT_SECRET
 # FREEE_REDIRECT_URI
+# NOTIFICATION_CHANNEL_ID (optional - default "00_at_wevox_ocean")

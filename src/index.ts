@@ -37,6 +37,229 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+// Helper function to publish Home tab
+async function publishHomeTab(userId: string, env: Bindings) {
+  const tokensJson = await env.FREEE_TOKENS_KV.get(userId);
+  const isFreeeAuthenticated = !!tokensJson;
+
+  const blocks: any[] = [];
+
+  // ========== ヘッダーセクション ==========
+  blocks.push(
+    {
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: 'Atrae Slack Bot'
+      }
+    }
+  );
+
+  // ========== 勤怠管理セクション ==========
+  blocks.push(
+    {
+      type: 'divider'
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*📊 勤怠管理*'
+      }
+    }
+  );
+
+  // 最終打刻情報表示
+  try {
+    const latestClock = await getLatestTimeClockKV(env.TIME_CLOCKS_KV, userId);
+
+    if (latestClock) {
+      const typeMap = {
+        'clock_in': '出勤',
+        'clock_out': '退勤',
+        'break_begin': '休憩入り',
+        'break_end': '休憩戻り'
+      };
+      const typeName = typeMap[latestClock.type] || latestClock.type;
+
+      const datetime = new Date(latestClock.datetime);
+      const jstTime = datetime.toLocaleString('ja-JP', {
+        timeZone: 'Asia/Tokyo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `最終打刻: *${typeName}* (${jstTime})`
+        }
+      });
+    } else {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '最終打刻: _打刻なし_'
+        }
+      });
+    }
+  } catch (error) {
+    console.error('Failed to get latest time clock:', error);
+  }
+
+  // 勤怠管理ボタン
+  blocks.push(
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: 'リモート出勤'
+          },
+          style: 'primary',
+          action_id: 'clock_in_remote_button'
+        },
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: 'オフィス出勤'
+          },
+          style: 'primary',
+          action_id: 'clock_in_office_button'
+        },
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '退勤'
+          },
+          action_id: 'clock_out_button'
+        }
+      ]
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '休憩入り'
+          },
+          action_id: 'break_start_button'
+        },
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '休憩戻り'
+          },
+          action_id: 'break_end_button'
+        }
+      ]
+    }
+  );
+
+  // ========== freee連携セクション ==========
+  blocks.push(
+    {
+      type: 'divider'
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: isFreeeAuthenticated
+          ? '*🔗 freee連携*\nステータス: ✅ 連携済み'
+          : '*🔗 freee連携*\nステータス: ⚪️ 未連携'
+      }
+    }
+  );
+
+  if (!isFreeeAuthenticated) {
+    const authUrl = `${env.FREEE_REDIRECT_URI.replace('/freee/callback', '/freee/auth')}?user_id=${userId}`;
+    blocks.push(
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: 'freeeと連携すると、打刻データをfreeeにも自動送信できます。'
+        }
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: 'freeeと連携する'
+            },
+            url: authUrl
+          }
+        ]
+      }
+    );
+  }
+
+  // ========== その他操作セクション ==========
+  blocks.push(
+    {
+      type: 'divider'
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*⚙️ その他操作*'
+      }
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '🔄 更新'
+          },
+          action_id: 'reload_home_button'
+        }
+      ]
+    }
+  );
+
+  // ========== その他機能セクション ==========
+  blocks.push(
+    {
+      type: 'divider'
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*✨ その他機能*\n• `/bigemoji` - Big Emojiを投稿'
+      }
+    }
+  );
+
+  await slackApi('views.publish', env.SLACK_BOT_TOKEN, {
+    user_id: userId,
+    view: {
+      type: 'home',
+      blocks: blocks
+    }
+  });
+}
+
 // Health check endpoint
 app.get('/healthz', (c) => c.text('ok'));
 
@@ -100,47 +323,37 @@ app.post('/slack/command', async (c) => {
   // Handle /clockin command
   if (command === '/clockin') {
     try {
-      // Always save to KV
-      await saveTimeClockKV(c.env.TIME_CLOCKS_KV, user_id, 'clock_in');
-
-      // If freee token exists, also call freee API
-      const tokensJson = await c.env.FREEE_TOKENS_KV.get(user_id);
-      if (tokensJson) {
-        const config: FreeeConfig = {
-          clientId: c.env.FREEE_CLIENT_ID,
-          clientSecret: c.env.FREEE_CLIENT_SECRET,
-          redirectUri: c.env.FREEE_REDIRECT_URI
-        };
-
-        let tokens: FreeeTokens = JSON.parse(tokensJson);
-        tokens = await getValidToken(tokens, config);
-        await c.env.FREEE_TOKENS_KV.put(user_id, JSON.stringify(tokens));
-
-        const companyId = await getCompanyId(tokens.access_token);
-        await clockIn(tokens.access_token, companyId);
-      }
-
-      // Open modal for message input
-      const metadata = JSON.stringify({ clock_type: 'clock_in' });
+      // Open modal to select remote or office
       await slackApi('views.open', c.env.SLACK_BOT_TOKEN, {
         trigger_id: trigger_id,
         view: {
           type: 'modal',
-          callback_id: 'clock_message_modal',
-          private_metadata: metadata,
+          callback_id: 'clock_in_select_modal',
           title: { type: 'plain_text', text: '出勤' },
-          submit: { type: 'plain_text', text: '投稿' },
+          submit: { type: 'plain_text', text: '次へ' },
           close: { type: 'plain_text', text: 'キャンセル' },
           blocks: [
             {
               type: 'input',
-              block_id: 'message_input',
-              label: { type: 'plain_text', text: 'メッセージ' },
+              block_id: 'location_select',
+              label: { type: 'plain_text', text: '勤務場所' },
               element: {
-                type: 'plain_text_input',
-                action_id: 'message',
-                initial_value: '出勤しました',
-                placeholder: { type: 'plain_text', text: 'メッセージを入力してください' }
+                type: 'radio_buttons',
+                action_id: 'location',
+                initial_option: {
+                  text: { type: 'plain_text', text: 'リモート' },
+                  value: 'remote'
+                },
+                options: [
+                  {
+                    text: { type: 'plain_text', text: 'リモート' },
+                    value: 'remote'
+                  },
+                  {
+                    text: { type: 'plain_text', text: 'オフィス' },
+                    value: 'office'
+                  }
+                ]
               }
             }
           ]
@@ -217,7 +430,7 @@ app.post('/slack/command', async (c) => {
     }
   }
 
-  // Existing bigemoji command (default)
+  // Default: bigemoji command
   // Store channel and thread_ts in private_metadata
   const metadata = JSON.stringify({ channel_id, thread_ts });
 
@@ -281,15 +494,26 @@ app.post('/slack/interactive', async (c) => {
     const actionId = action.action_id;
     const triggerId = payload.trigger_id;
 
+    // Handle reload button
+    if (actionId === 'reload_home_button') {
+      await publishHomeTab(userId, c.env);
+      return c.json({});
+    }
+
     try {
       let defaultMessage = '';
       let clockType: 'clock_in' | 'clock_out' | 'break_begin' | 'break_end' | null = null;
       let modalTitle = '';
+      let requireModal = true;
 
-      if (actionId === 'clock_in_button') {
+      if (actionId === 'clock_in_remote_button') {
         clockType = 'clock_in';
-        defaultMessage = '出勤しました';
-        modalTitle = '出勤';
+        defaultMessage = 'リモート出勤しました';
+        modalTitle = 'リモート出勤';
+      } else if (actionId === 'clock_in_office_button') {
+        clockType = 'clock_in';
+        defaultMessage = 'オフィス出勤しました';
+        modalTitle = 'オフィス出勤';
       } else if (actionId === 'clock_out_button') {
         clockType = 'clock_out';
         defaultMessage = '退勤しました';
@@ -298,46 +522,35 @@ app.post('/slack/interactive', async (c) => {
         clockType = 'break_begin';
         defaultMessage = '休憩入りしました';
         modalTitle = '休憩入り';
+        requireModal = false;
       } else if (actionId === 'break_end_button') {
         clockType = 'break_end';
         defaultMessage = '休憩戻りしました';
         modalTitle = '休憩戻り';
+        requireModal = false;
       }
 
       if (!clockType) {
         return c.json({});
       }
 
-      // Always save to KV for tracking
-      await saveTimeClockKV(c.env.TIME_CLOCKS_KV, userId, clockType);
+      // For break start/end, process directly without modal
+      if (!requireModal) {
+        // Process in background (save to KV only, no Slack post)
+        c.executionCtx.waitUntil((async () => {
+          try {
+            // Save to KV
+            await saveTimeClockKV(c.env.TIME_CLOCKS_KV, userId, clockType);
+            console.log('Saved to KV:', userId, clockType);
+          } catch (error) {
+            console.error('KV save error:', error);
+          }
+        })());
 
-      // If freee token exists, also call freee API
-      const tokensJson = await c.env.FREEE_TOKENS_KV.get(userId);
-      if (tokensJson) {
-        const config: FreeeConfig = {
-          clientId: c.env.FREEE_CLIENT_ID,
-          clientSecret: c.env.FREEE_CLIENT_SECRET,
-          redirectUri: c.env.FREEE_REDIRECT_URI
-        };
-
-        let tokens: FreeeTokens = JSON.parse(tokensJson);
-        tokens = await getValidToken(tokens, config);
-        await c.env.FREEE_TOKENS_KV.put(userId, JSON.stringify(tokens));
-
-        const companyId = await getCompanyId(tokens.access_token);
-
-        if (clockType === 'clock_in') {
-          await clockIn(tokens.access_token, companyId);
-        } else if (clockType === 'clock_out') {
-          await clockOut(tokens.access_token, companyId);
-        } else if (clockType === 'break_begin') {
-          await breakStart(tokens.access_token, companyId);
-        } else if (clockType === 'break_end') {
-          await breakEnd(tokens.access_token, companyId);
-        }
+        return c.json({});
       }
 
-      // Open modal for message input
+      // For clock in/out, open modal immediately (save data later in modal submission)
       const metadata = JSON.stringify({ clock_type: clockType });
       await slackApi('views.open', c.env.SLACK_BOT_TOKEN, {
         trigger_id: triggerId,
@@ -592,6 +805,46 @@ app.post('/slack/interactive', async (c) => {
     return c.json({ response_action: 'clear' });
   }
 
+  // Handle clock in location select modal submission
+  if (payload.type === 'view_submission' && payload.view.callback_id === 'clock_in_select_modal') {
+    const userId = payload.user.id;
+    const location = payload.view.state.values['location_select']['location'].selected_option.value;
+
+    // Determine message based on location
+    const defaultMessage = location === 'remote' ? 'リモート出勤しました' : 'オフィス出勤しました';
+    const title = location === 'remote' ? 'リモート出勤' : 'オフィス出勤';
+
+    // Save location in metadata for later processing
+    const metadata = JSON.stringify({ clock_type: 'clock_in', location });
+
+    // Return updated modal immediately (avoid timeout)
+    // Data saving will happen in clock_message_modal submission
+    return c.json({
+      response_action: 'update',
+      view: {
+        type: 'modal',
+        callback_id: 'clock_message_modal',
+        private_metadata: metadata,
+        title: { type: 'plain_text', text: title },
+        submit: { type: 'plain_text', text: '投稿' },
+        close: { type: 'plain_text', text: 'キャンセル' },
+        blocks: [
+          {
+            type: 'input',
+            block_id: 'message_input',
+            label: { type: 'plain_text', text: 'メッセージ' },
+            element: {
+              type: 'plain_text_input',
+              action_id: 'message',
+              initial_value: defaultMessage,
+              placeholder: { type: 'plain_text', text: 'メッセージを入力してください' }
+            }
+          }
+        ]
+      }
+    });
+  }
+
   // Handle clock message modal submission
   if (payload.type === 'view_submission' && payload.view.callback_id === 'clock_message_modal') {
     const userId = payload.user.id;
@@ -606,41 +859,85 @@ app.post('/slack/interactive', async (c) => {
       });
     }
 
-    try {
-      // Get user info for username and icon
-      const userInfoRes = await fetch(`https://slack.com/api/users.info?user=${userId}`, {
-        headers: {
-          'Authorization': `Bearer ${c.env.SLACK_BOT_TOKEN}`
-        }
-      });
-      const userInfo = await userInfoRes.json<any>();
-
-      if (!userInfo.ok) {
-        throw new Error(`users.info failed: ${JSON.stringify(userInfo)}`);
+    // Process everything in background to avoid timeout
+    c.executionCtx.waitUntil((async () => {
+      try {
+        // Save to KV
+        await saveTimeClockKV(c.env.TIME_CLOCKS_KV, userId, clockType);
+        console.log('Saved to KV:', userId, clockType);
+      } catch (error) {
+        console.error('KV save error:', error);
       }
 
-      const username = userInfo.user.real_name || userInfo.user.name;
-      const icon_url = userInfo.user.profile.image_192;
+      // If freee token exists, also call freee API (don't let this block Slack posting)
+      // Note: break_begin and break_end are only saved to KV for now
+      // TODO: Implement freee API integration for break times later
+      if (clockType === 'clock_in' || clockType === 'clock_out') {
+        try {
+          const tokensJson = await c.env.FREEE_TOKENS_KV.get(userId);
+          if (tokensJson) {
+            const config: FreeeConfig = {
+              clientId: c.env.FREEE_CLIENT_ID,
+              clientSecret: c.env.FREEE_CLIENT_SECRET,
+              redirectUri: c.env.FREEE_REDIRECT_URI
+            };
 
-      // Get notification channel from environment variable
-      const notificationChannel = c.env.NOTIFICATION_CHANNEL_ID || '00_at_wevox_ocean';
+            let tokens: FreeeTokens = JSON.parse(tokensJson);
+            tokens = await getValidToken(tokens, config);
+            await c.env.FREEE_TOKENS_KV.put(userId, JSON.stringify(tokens));
 
-      // Post to notification channel as user
-      await slackApi('chat.postMessage', c.env.SLACK_BOT_TOKEN, {
-        channel: notificationChannel,
-        text: message,
-        username: username,
-        icon_url: icon_url
-      });
+            const companyId = await getCompanyId(tokens.access_token);
 
-      return c.json({ response_action: 'clear' });
-    } catch (error) {
-      console.error('Failed to post message:', error);
-      return c.json({
-        response_action: 'errors',
-        errors: { message_input: `投稿に失敗しました: ${error instanceof Error ? error.message : String(error)}` }
-      });
-    }
+            if (clockType === 'clock_in') {
+              await clockIn(tokens.access_token, companyId);
+            } else if (clockType === 'clock_out') {
+              await clockOut(tokens.access_token, companyId);
+            }
+            console.log('Freee API success:', clockType);
+          }
+        } catch (error) {
+          console.error('Freee API error (continuing anyway):', error);
+        }
+      }
+
+      // Post to Slack (always execute regardless of freee API result)
+      try {
+        // Get user info for username and icon
+        const userInfoRes = await fetch(`https://slack.com/api/users.info?user=${userId}`, {
+          headers: {
+            'Authorization': `Bearer ${c.env.SLACK_BOT_TOKEN}`
+          }
+        });
+        const userInfo = await userInfoRes.json<any>();
+
+        if (userInfo.ok) {
+          const username = userInfo.user.real_name || userInfo.user.name;
+          const icon_url = userInfo.user.profile.image_192;
+
+          // Get notification channel from environment variable
+          const notificationChannel = c.env.NOTIFICATION_CHANNEL_ID || '00_at_wevox_ocean';
+
+          console.log('Posting to channel:', notificationChannel, 'message:', message);
+
+          // Post to notification channel as user
+          const postResult = await slackApi('chat.postMessage', c.env.SLACK_BOT_TOKEN, {
+            channel: notificationChannel,
+            text: message,
+            username: username,
+            icon_url: icon_url
+          });
+
+          console.log('Post result:', postResult);
+        } else {
+          console.error('Failed to get user info:', userInfo);
+        }
+      } catch (error) {
+        console.error('Slack post error:', error);
+      }
+    })());
+
+    // Return immediately to close modal
+    return c.json({ response_action: 'clear' });
   }
 
   return c.text('');
@@ -662,181 +959,7 @@ app.post('/slack/events', async (c) => {
   // Handle app_home_opened event
   if (payload.event?.type === 'app_home_opened') {
     const userId = payload.event.user;
-
-    const tokensJson = await c.env.FREEE_TOKENS_KV.get(userId);
-    const isFreeeAuthenticated = !!tokensJson;
-
-    const blocks: any[] = [
-      {
-        type: 'header',
-        text: {
-          type: 'plain_text',
-          text: 'Atrae Slack Bot'
-        }
-      },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: isFreeeAuthenticated
-            ? ':white_check_mark: freee連携済み'
-            : ':clock1: 勤怠管理（freee未連携）'
-        }
-      }
-    ];
-
-    // Always show latest time clock from KV (user-specific)
-    let latestClockText = '';
-    try {
-      const latestClock = await getLatestTimeClockKV(c.env.TIME_CLOCKS_KV, userId);
-
-      if (latestClock) {
-        const typeMap = {
-          'clock_in': '出勤',
-          'clock_out': '退勤',
-          'break_begin': '休憩入り',
-          'break_end': '休憩戻り'
-        };
-        const typeName = typeMap[latestClock.type] || latestClock.type;
-
-        const datetime = new Date(latestClock.datetime);
-        const jstTime = datetime.toLocaleString('ja-JP', {
-          timeZone: 'Asia/Tokyo',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-
-        latestClockText = `\n*最終打刻:* ${typeName} (${jstTime})`;
-      } else {
-        latestClockText = '\n*最終打刻:* 打刻なし';
-      }
-    } catch (error) {
-      console.error('Failed to get latest time clock:', error);
-      latestClockText = '';
-    }
-
-    if (latestClockText) {
-      blocks.push(
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: latestClockText
-          }
-        }
-      );
-    }
-
-    // Always show attendance buttons
-    blocks.push(
-      {
-        type: 'divider'
-      },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: '*勤怠管理*'
-        }
-      },
-      {
-        type: 'actions',
-        elements: [
-          {
-            type: 'button',
-            text: {
-              type: 'plain_text',
-              text: '出勤'
-            },
-            style: 'primary',
-            action_id: 'clock_in_button'
-          },
-          {
-            type: 'button',
-            text: {
-              type: 'plain_text',
-              text: '退勤'
-            },
-            action_id: 'clock_out_button'
-          }
-        ]
-      },
-      {
-        type: 'actions',
-        elements: [
-          {
-            type: 'button',
-            text: {
-              type: 'plain_text',
-              text: '休憩入り'
-            },
-            action_id: 'break_start_button'
-          },
-          {
-            type: 'button',
-            text: {
-              type: 'plain_text',
-              text: '休憩戻り'
-            },
-            action_id: 'break_end_button'
-          }
-        ]
-      }
-    );
-
-    // Show freee auth button if not authenticated
-    if (!isFreeeAuthenticated) {
-      const authUrl = `${c.env.FREEE_REDIRECT_URI.replace('/freee/callback', '/freee/auth')}?user_id=${userId}`;
-      blocks.push(
-        {
-          type: 'divider'
-        },
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: '*freee連携（オプション）*\nfreeeと連携すると、打刻データをfreeeにも自動送信できます。'
-          }
-        },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              text: {
-                type: 'plain_text',
-                text: 'freeeと連携する'
-              },
-              url: authUrl
-            }
-          ]
-        }
-      );
-    }
-
-    blocks.push(
-      {
-        type: 'divider'
-      },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: '*その他の機能:*\n• `/bigemoji` - Big Emojiを投稿'
-        }
-      }
-    );
-
-    await slackApi('views.publish', c.env.SLACK_BOT_TOKEN, {
-      user_id: userId,
-      view: {
-        type: 'home',
-        blocks: blocks
-      }
-    });
+    await publishHomeTab(userId, c.env);
   }
 
   return c.json({ ok: true });

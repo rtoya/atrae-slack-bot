@@ -52,6 +52,13 @@ async function publishHomeTab(userId: string, env: Bindings) {
         type: 'plain_text',
         text: 'Atrae Slack Bot'
       }
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: 'このボットは勤怠管理とBig Emoji投稿機能を提供します。\n質問や要望は <#00_x_at_work_journal> へどうぞ!'
+      }
     }
   );
 

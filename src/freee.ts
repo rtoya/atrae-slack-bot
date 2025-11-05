@@ -126,7 +126,8 @@ export async function getValidToken(
  */
 export async function clockIn(
   accessToken: string,
-  companyId: number
+  companyId: number,
+  employeeId: number
 ): Promise<AttendanceRecord> {
   // Get current date in JST (YYYY-MM-DD format)
   const now = new Date();
@@ -134,7 +135,7 @@ export async function clockIn(
   const baseDate = jstDate.toISOString().split('T')[0];
 
   const response = await fetch(
-    `https://api.freee.co.jp/hr/api/v1/employees/me/time_clocks`,
+    `https://api.freee.co.jp/hr/api/v1/employees/${employeeId}/time_clocks`,
     {
       method: 'POST',
       headers: {
@@ -163,7 +164,8 @@ export async function clockIn(
  */
 export async function clockOut(
   accessToken: string,
-  companyId: number
+  companyId: number,
+  employeeId: number
 ): Promise<AttendanceRecord> {
   // Get current date in JST (YYYY-MM-DD format)
   const now = new Date();
@@ -171,7 +173,7 @@ export async function clockOut(
   const baseDate = jstDate.toISOString().split('T')[0];
 
   const response = await fetch(
-    `https://api.freee.co.jp/hr/api/v1/employees/me/time_clocks`,
+    `https://api.freee.co.jp/hr/api/v1/employees/${employeeId}/time_clocks`,
     {
       method: 'POST',
       headers: {
@@ -200,14 +202,15 @@ export async function clockOut(
  */
 export async function breakStart(
   accessToken: string,
-  companyId: number
+  companyId: number,
+  employeeId: number
 ): Promise<AttendanceRecord> {
   const now = new Date();
   const jstDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
   const baseDate = jstDate.toISOString().split('T')[0];
 
   const response = await fetch(
-    `https://api.freee.co.jp/hr/api/v1/employees/me/time_clocks`,
+    `https://api.freee.co.jp/hr/api/v1/employees/${employeeId}/time_clocks`,
     {
       method: 'POST',
       headers: {
@@ -236,14 +239,15 @@ export async function breakStart(
  */
 export async function breakEnd(
   accessToken: string,
-  companyId: number
+  companyId: number,
+  employeeId: number
 ): Promise<AttendanceRecord> {
   const now = new Date();
   const jstDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
   const baseDate = jstDate.toISOString().split('T')[0];
 
   const response = await fetch(
-    `https://api.freee.co.jp/hr/api/v1/employees/me/time_clocks`,
+    `https://api.freee.co.jp/hr/api/v1/employees/${employeeId}/time_clocks`,
     {
       method: 'POST',
       headers: {
@@ -300,7 +304,7 @@ export async function getLatestTimeClock(
 }
 
 /**
- * Get user's company ID
+ * Get user's company ID and employee ID from /users/me
  */
 export async function getCompanyId(accessToken: string): Promise<number> {
   const response = await fetch(
@@ -319,4 +323,67 @@ export async function getCompanyId(accessToken: string): Promise<number> {
 
   const data = await response.json<any>();
   return data.companies[0].id; // Use first company
+}
+
+/**
+ * Get employee ID for the authenticated user from /users/me
+ */
+export async function getEmployeeId(accessToken: string): Promise<number> {
+  const response = await fetch(
+    'https://api.freee.co.jp/hr/api/v1/users/me',
+    {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to get employee info: ${error}`);
+  }
+
+  const data = await response.json<any>();
+
+  // /users/me returns companies array with employee_id
+  if (!data.companies || data.companies.length === 0) {
+    throw new Error('No company found for this user');
+  }
+
+  const employeeId = data.companies[0].employee_id;
+  if (!employeeId) {
+    throw new Error('No employee_id found in user info');
+  }
+
+  return employeeId;
+}
+
+/**
+ * Get company ID and employee ID with KV cache
+ * Returns cached values if available, otherwise fetches and caches them
+ */
+export async function getCompanyAndEmployeeId(
+  accessToken: string,
+  userId: string,
+  kv: KVNamespace
+): Promise<{ companyId: number; employeeId: number }> {
+  // Try to get from cache first
+  const cacheKey = `freee_ids:${userId}`;
+  const cached = await kv.get(cacheKey);
+
+  if (cached) {
+    const data = JSON.parse(cached);
+    return { companyId: data.companyId, employeeId: data.employeeId };
+  }
+
+  // Fetch from API if not cached
+  const companyId = await getCompanyId(accessToken);
+  const employeeId = await getEmployeeId(accessToken);
+
+  // Cache for 30 days (these IDs rarely change)
+  await kv.put(cacheKey, JSON.stringify({ companyId, employeeId }), {
+    expirationTtl: 30 * 24 * 60 * 60
+  });
+
+  return { companyId, employeeId };
 }

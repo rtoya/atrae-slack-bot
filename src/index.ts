@@ -57,7 +57,7 @@ async function publishHomeTab(userId: string, env: Bindings) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: 'このボットは勤怠管理とBig Emoji投稿機能を提供します。\n質問や要望は <#00_x_at_work_journal> へどうぞ!'
+        text: 'このボットは勤怠管理とBig Emoji投稿機能を提供します。\n質問や要望は <#C09QGMB0VFV|00_x_at_work_journal> へどうぞ!'
       }
     }
   );
